@@ -1,0 +1,62 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String               @id @default(uuid())
+  email        String               @unique
+  passwordHash String
+  name         String
+  avatarUrl    String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  meetings     Meeting[]            @relation("HostMeetings")
+  participants MeetingParticipant[]
+  messages     ChatMessage[]
+}
+
+model Meeting {
+  id                 String               @id // Custom cryptographically random meeting ID (e.g., abc-defg-hij)
+  title              String               @default("Untitled Meeting")
+  hostId             String
+  host               User                 @relation("HostMeetings", fields: [hostId], references: [id], onDelete: Cascade)
+  isLocked           Boolean              @default(false)
+  waitingRoomEnabled Boolean              @default(false)
+  scheduledAt        DateTime?
+  endedAt            DateTime?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  participants       MeetingParticipant[]
+  messages           ChatMessage[]
+}
+
+model MeetingParticipant {
+  id        String    @id @default(uuid())
+  meetingId String
+  meeting   Meeting   @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  guestName String?
+  role      String    @default("PARTICIPANT") // HOST, PARTICIPANT
+  joinedAt  DateTime  @default(now())
+  leftAt    DateTime?
+}
+
+model ChatMessage {
+  id        String   @id @default(uuid())
+  meetingId String
+  meeting   Meeting  @relation(fields: [meetingId], references: [id], onDelete: Cascade)
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  senderName String
+  content   String
+  createdAt DateTime @default(now())
+}

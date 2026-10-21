@@ -1,0 +1,26 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Environment Variables
+.env
+*/.env
+*.env.local
+
+# Build outputs
+dist/
+build/
+*/dist/
+
+# SQLite databases & logs
+*.db
+*.db-journal
+dev.db
+*.log
+npm-debug.log*
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,19 @@
+{
+  "name": "webrtc-video-conferencing",
+  "version": "1.0.0",
+  "description": "Secure Real-Time Video Conferencing Website Using WebRTC, Socket.IO, Express, and React",
+  "scripts": {
+    "dev": "concurrently -n \"SERVER,CLIENT\" -c \"blue,green\" \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "build:server": "npm run build --prefix server",
+    "build:client": "npm run build --prefix client",
+    "build": "concurrently \"npm run build:server\" \"npm run build:client\"",
+    "test:server": "npm run test --prefix server",
+    "test:client": "npm run test --prefix client",
+    "test": "npm run test:server && npm run test:client"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # PostgreSQL persistent storage
+  postgres:
+    image: postgres:16-alpine
+    container_name: aethermeet_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aethermeet
+      POSTGRES_PASSWORD: aethermeet_secure_password_123
+      POSTGRES_DB: aethermeet_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aethermeet -d aethermeet_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis for Socket.IO multi-server scaling
+  redis:
+    image: redis:7-alpine
+    container_name: aethermeet_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Node.js + Express + WebRTC Signaling Backend
+  backend:
+    build:
+      context: ./server
+      dockerfile: ../Dockerfile.backend
+    container_name: aethermeet_backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: 5000
+      NODE_ENV: production
+      DATABASE_URL: postgresql://aethermeet:aethermeet_secure_password_123@postgres:5432/aethermeet_db?schema=public
+      REDIS_URL: redis://redis:6379
+      JWT_SECRET: super_secure_production_jwt_secret_min_32_characters_987654321
+      CORS_ORIGIN: http://localhost,http://localhost:80,http://localhost:5173
+      STUN_SERVERS: stun:stun.l.google.com:19302,stun:stun1.l.google.com:19302
+    ports:
+      - "5000:5000"
+
+  # React + Vite + Nginx Frontend
+  frontend:
+    build:
+      context: ./client
+      dockerfile: ../Dockerfile.frontend
+    container_name: aethermeet_frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "80:80"
+
+volumes:
+  postgres_data:
+  redis_data:
