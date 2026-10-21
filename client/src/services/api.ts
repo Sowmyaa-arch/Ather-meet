@@ -1,7 +1,8 @@
 import { MeetingDetails, IceServer, User } from '../types';
 
+const RENDER_BACKEND_URL = 'https://ather-meet.onrender.com';
 const envApiUrl = (import.meta as any).env?.VITE_API_URL;
-const API_BASE = envApiUrl ? `${envApiUrl.replace(/\/$/, '')}/api` : '/api';
+const API_BASE = envApiUrl ? `${envApiUrl.replace(/\/$/, '')}/api` : `${RENDER_BACKEND_URL}/api`;
 
 function getAuthHeaders(): HeadersInit {
   const token = localStorage.getItem('aethermeet_token');
