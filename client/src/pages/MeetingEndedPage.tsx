@@ -1,12 +1,16 @@
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
-import { Video, Home, ArrowLeft, Star, CheckCircle } from 'lucide-react';
+import { Link, useNavigate, useLocation } from 'react-router-dom';
+import { Video, Home, ArrowLeft, Star, CheckCircle, Power } from 'lucide-react';
 import { Navbar } from '../components/Navbar';
 
 export const MeetingEndedPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const [rating, setRating] = useState<number | null>(null);
   const [feedbackSubmitted, setFeedbackSubmitted] = useState(false);
+
+  const stateMessage = location.state?.message || sessionStorage.getItem('aethermeet_ended_reason');
+  const endedByHost = Boolean(location.state?.endedByHost || sessionStorage.getItem('aethermeet_ended_by_host') === 'true');
 
   return (
     <div className="min-h-screen bg-gray-950 text-gray-100 flex flex-col">
@@ -14,14 +18,22 @@ export const MeetingEndedPage: React.FC = () => {
 
       <main className="flex-1 flex items-center justify-center p-4">
         <div className="max-w-md w-full bg-gray-900 border border-gray-800 rounded-3xl p-8 text-center space-y-6 shadow-2xl">
-          <div className="w-16 h-16 rounded-2xl bg-brand-600/20 border border-brand-500/30 text-brand-400 flex items-center justify-center mx-auto">
-            <CheckCircle className="w-8 h-8 text-emerald-400" />
+          <div className={`w-16 h-16 rounded-2xl flex items-center justify-center mx-auto ${
+            endedByHost
+              ? 'bg-rose-500/10 border border-rose-500/30 text-rose-400'
+              : 'bg-brand-600/20 border border-brand-500/30 text-brand-400'
+          }`}>
+            {endedByHost ? <Power className="w-8 h-8 text-rose-400" /> : <CheckCircle className="w-8 h-8 text-emerald-400" />}
           </div>
 
           <div className="space-y-2">
-            <h1 className="text-2xl font-extrabold text-white">You Left the Meeting</h1>
+            <h1 className="text-2xl font-extrabold text-white">
+              {endedByHost ? 'The Host Has Ended the Meeting' : 'You Left the Meeting'}
+            </h1>
             <p className="text-sm text-gray-400">
-              Your audio, video, and screen sharing tracks have been safely terminated.
+              {endedByHost
+                ? (stateMessage || 'The host has ended this meeting for all participants. You have been removed from the call.')
+                : (stateMessage || 'Your audio, video, and screen sharing tracks have been safely terminated.')}
             </p>
           </div>
 

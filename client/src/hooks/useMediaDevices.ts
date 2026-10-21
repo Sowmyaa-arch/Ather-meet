@@ -484,6 +484,31 @@ export function useMediaDevices(options: boolean | UseMediaDevicesOptions = fals
     }
   }, [screenStream]);
 
+  // Explicitly force mute audio (e.g. when host mutes)
+  const muteAudio = useCallback(() => {
+    if (localStream) {
+      localStream.getAudioTracks().forEach(t => {
+        t.enabled = false;
+      });
+    }
+    setIsAudioMuted(true);
+    cleanupAudioMeter();
+  }, [localStream, cleanupAudioMeter]);
+
+  // Explicitly force turn off video (e.g. when host blocks camera)
+  const turnOffVideo = useCallback(() => {
+    if (localStream) {
+      const videoTrack = localStream.getVideoTracks()[0];
+      if (videoTrack) {
+        videoTrack.stop();
+        localStream.removeTrack(videoTrack);
+      }
+      setLocalStream(new MediaStream(localStream.getTracks()));
+    }
+    setIsVideoOff(true);
+    setIsSimulated(false);
+  }, [localStream]);
+
   useEffect(() => {
     if (autoStart) {
       startMedia();
@@ -515,6 +540,8 @@ export function useMediaDevices(options: boolean | UseMediaDevicesOptions = fals
     stopMedia,
     toggleAudio,
     toggleVideo,
+    muteAudio,
+    turnOffVideo,
     setIsAudioMuted,
     setIsVideoOff,
     startScreenShare,

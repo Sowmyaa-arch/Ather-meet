@@ -4,6 +4,7 @@ import {
   Copy,
   Check,
   Shield,
+  Crown,
   Clock,
   Wifi,
   Lock,
@@ -56,6 +57,7 @@ export const MeetingRoomPage: React.FC = () => {
   const [isCameraBlocked, setIsCameraBlocked] = useState(false);
   const [guestCameraBlocked, setGuestCameraBlocked] = useState(false);
   const [cameraBlockedNotice, setCameraBlockedNotice] = useState<string | null>(null);
+  const [hostNotification, setHostNotification] = useState<string | null>(null);
 
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -103,6 +105,8 @@ export const MeetingRoomPage: React.FC = () => {
     stopMedia,
     toggleAudio,
     toggleVideo,
+    muteAudio,
+    turnOffVideo,
     setIsAudioMuted,
     setIsVideoOff,
     startScreenShare,
@@ -301,23 +305,63 @@ export const MeetingRoomPage: React.FC = () => {
     };
 
     const handleForceMute = () => {
-      toggleAudio();
+      muteAudio();
+      setCameraBlockedNotice('You have been muted by the host.');
+      setTimeout(() => setCameraBlockedNotice(null), 4000);
     };
 
     const handleRemovedFromMeeting = (data: any) => {
-      alert(data.message || 'You have been removed from the meeting by the host.');
       stopMedia();
       closeAllConnections();
       disconnectSocket();
-      navigate('/ended');
+      navigate('/ended', {
+        state: { message: data.message || 'You were removed from the meeting by the host.', endedByHost: true },
+      });
     };
 
     const handleMeetingEnded = (data: any) => {
-      alert(data.message || 'The host has ended this meeting.');
+      sessionStorage.setItem('aethermeet_ended_by_host', 'true');
+      sessionStorage.setItem(
+        'aethermeet_ended_reason',
+        data?.message || 'The host has ended this meeting for all participants.'
+      );
       stopMedia();
       closeAllConnections();
       disconnectSocket();
-      navigate('/ended');
+      navigate('/ended', {
+        state: {
+          message: data?.message || 'The host has ended this meeting for all participants.',
+          endedByHost: true,
+        },
+      });
+    };
+
+    const handleHostTransferred = (data: {
+      newHostSocketId: string;
+      newHostDisplayName: string;
+      previousHostSocketId: string;
+      reason?: string;
+    }) => {
+      const isSelfNewHost = data.newHostSocketId === socket.id;
+      setIsHost(isSelfNewHost);
+      setParticipants(prev =>
+        prev.map(p => ({
+          ...p,
+          role: p.socketId === data.newHostSocketId ? 'HOST' : p.socketId === data.previousHostSocketId ? 'PARTICIPANT' : p.role,
+        }))
+      );
+      if (isSelfNewHost) {
+        setHostNotification('👑 You are now the meeting host! All host controls are active.');
+      } else {
+        setHostNotification(`👑 ${data.newHostDisplayName} is now the meeting host.`);
+      }
+      setTimeout(() => setHostNotification(null), 5000);
+    };
+
+    const handlePromotedToHost = (data: any) => {
+      setIsHost(true);
+      setHostNotification(data.message || '👑 You are now the meeting host! All host controls are enabled.');
+      setTimeout(() => setHostNotification(null), 5000);
     };
 
     const handleRoomLockChanged = ({ isLocked }: { isLocked: boolean }) => {
@@ -379,6 +423,8 @@ export const MeetingRoomPage: React.FC = () => {
     socket.on('force-mute', handleForceMute);
     socket.on('removed-from-meeting', handleRemovedFromMeeting);
     socket.on('meeting-ended', handleMeetingEnded);
+    socket.on('host-transferred', handleHostTransferred);
+    socket.on('promoted-to-host', handlePromotedToHost);
     socket.on('room-lock-changed', handleRoomLockChanged);
     socket.on('waiting-room-changed', handleWaitingRoomChanged);
     socket.on('chat-message-received', handleChatMessageReceived);
@@ -409,7 +455,7 @@ export const MeetingRoomPage: React.FC = () => {
 
     const handleCameraBlocked = (data: any) => {
       setIsCameraBlocked(true);
-      setIsVideoOff(true);
+      turnOffVideo();
       setCameraBlockedNotice(data.message || 'Your camera access has been blocked by the host.');
       setTimeout(() => setCameraBlockedNotice(null), 5000);
     };
@@ -463,6 +509,8 @@ export const MeetingRoomPage: React.FC = () => {
       socket.off('force-mute', handleForceMute);
       socket.off('removed-from-meeting', handleRemovedFromMeeting);
       socket.off('meeting-ended', handleMeetingEnded);
+      socket.off('host-transferred', handleHostTransferred);
+      socket.off('promoted-to-host', handlePromotedToHost);
       socket.off('room-lock-changed', handleRoomLockChanged);
       socket.off('waiting-room-changed', handleWaitingRoomChanged);
       socket.off('chat-message-received', handleChatMessageReceived);
@@ -600,6 +648,8 @@ export const MeetingRoomPage: React.FC = () => {
 
   // Leave & End Meeting Handlers
   const handleLeaveOnly = () => {
+    sessionStorage.removeItem('aethermeet_ended_by_host');
+    sessionStorage.removeItem('aethermeet_ended_reason');
     stopMedia();
     closeAllConnections();
     socketRef.current.emit('leave-meeting');
@@ -607,12 +657,33 @@ export const MeetingRoomPage: React.FC = () => {
     navigate('/ended');
   };
 
+  const handleTransferHost = (targetSocketId: string) => {
+    socketRef.current.emit('transfer-host', { targetSocketId });
+  };
+
+  const handleMuteAll = () => {
+    socketRef.current.emit('mute-all-participants');
+  };
+
+  const handleTransferAndLeave = (newHostSocketId: string) => {
+    socketRef.current.emit('transfer-host', { targetSocketId: newHostSocketId });
+    setTimeout(() => {
+      handleLeaveOnly();
+    }, 250);
+  };
+
   const handleEndForEveryone = () => {
-    stopMedia();
-    closeAllConnections();
-    socketRef.current.emit('end-meeting-for-everyone');
-    disconnectSocket();
-    navigate('/ended');
+    sessionStorage.setItem('aethermeet_ended_by_host', 'true');
+    sessionStorage.setItem('aethermeet_ended_reason', 'You ended the meeting for all participants.');
+    socketRef.current.emit('end-meeting-for-everyone', { meetingId });
+    setTimeout(() => {
+      stopMedia();
+      closeAllConnections();
+      disconnectSocket();
+      navigate('/ended', {
+        state: { message: 'You ended the meeting for all participants.', endedByHost: true },
+      });
+    }, 200);
   };
 
   // 1-Click Copy Meeting Link
@@ -712,6 +783,14 @@ export const MeetingRoomPage: React.FC = () => {
 
       {/* Main Video Stage */}
       <main className="flex-1 relative overflow-hidden flex">
+        {/* Host Notification Banner (Host promotion or transfer) */}
+        {hostNotification && (
+          <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gray-900/95 border border-amber-500/50 text-amber-300 text-xs font-semibold shadow-2xl backdrop-blur-md animate-fadeIn">
+            <Crown className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>{hostNotification}</span>
+          </div>
+        )}
+
         {/* Host Camera Block Notice Toast */}
         {cameraBlockedNotice && (
           <div className="absolute top-4 left-1/2 -translate-x-1/2 z-50 flex items-center gap-2 px-4 py-2.5 rounded-2xl bg-gray-900/95 border border-rose-500/40 text-rose-300 text-xs font-semibold shadow-2xl backdrop-blur-md animate-fadeIn">
@@ -791,6 +870,8 @@ export const MeetingRoomPage: React.FC = () => {
           onAdmitParticipant={handleAdmit}
           onRejectParticipant={handleReject}
           onMuteParticipant={handleMuteParticipant}
+          onMuteAll={handleMuteAll}
+          onTransferHost={handleTransferHost}
           onRemoveParticipant={handleRemoveParticipant}
           onBlockCamera={handleBlockCamera}
           onUnblockCamera={handleUnblockCamera}
@@ -876,7 +957,9 @@ export const MeetingRoomPage: React.FC = () => {
         isOpen={isLeaveModalOpen}
         onClose={() => setIsLeaveModalOpen(false)}
         isHost={isHost}
+        participants={participants}
         onLeaveOnly={handleLeaveOnly}
+        onTransferAndLeave={handleTransferAndLeave}
         onEndForEveryone={handleEndForEveryone}
       />
     </div>

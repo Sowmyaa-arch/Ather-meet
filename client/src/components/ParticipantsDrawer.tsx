@@ -2,6 +2,7 @@ import React from 'react';
 import {
   X,
   Shield,
+  Crown,
   Mic,
   MicOff,
   Video,
@@ -33,6 +34,8 @@ interface ParticipantsDrawerProps {
   onAdmitParticipant: (socketId: string) => void;
   onRejectParticipant: (socketId: string) => void;
   onMuteParticipant: (socketId: string) => void;
+  onMuteAll: () => void;
+  onTransferHost: (socketId: string) => void;
   onRemoveParticipant: (socketId: string) => void;
   onBlockCamera: (socketId: string) => void;
   onUnblockCamera: (socketId: string) => void;
@@ -57,6 +60,8 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
   onAdmitParticipant,
   onRejectParticipant,
   onMuteParticipant,
+  onMuteAll,
+  onTransferHost,
   onRemoveParticipant,
   onBlockCamera,
   onUnblockCamera,
@@ -135,6 +140,20 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
                 }`}
               >
                 {guestCameraBlocked ? 'Blocked' : 'Allowed'}
+              </button>
+            </div>
+
+            <div className="pt-2 border-t border-gray-750 flex items-center justify-between">
+              <div className="flex items-center gap-2 text-xs text-gray-300">
+                <VolumeX className="w-4 h-4 text-amber-400" />
+                <span>Mute Everyone</span>
+              </div>
+              <button
+                onClick={onMuteAll}
+                className="text-xs px-2.5 py-1 rounded-lg font-medium bg-amber-600/20 hover:bg-amber-600 text-amber-300 hover:text-white transition-colors border border-amber-500/30"
+                title="Mute all non-host participants"
+              >
+                Mute All
               </button>
             </div>
           </div>
@@ -240,6 +259,13 @@ export const ParticipantsDrawer: React.FC<ParticipantsDrawerProps> = ({
                 {/* Host actions for this participant */}
                 {isHost && (
                   <div className="flex items-center gap-1 pl-2 border-l border-gray-700">
+                    <button
+                      onClick={() => onTransferHost(p.socketId)}
+                      className="p-1 rounded text-gray-400 hover:text-amber-300 hover:bg-amber-400/10 transition-colors"
+                      title="Make Host (Transfer Host Controls)"
+                    >
+                      <Crown className="w-3.5 h-3.5" />
+                    </button>
                     <button
                       onClick={() => p.isCameraBlocked ? onUnblockCamera(p.socketId) : onBlockCamera(p.socketId)}
                       className={`p-1 rounded transition-colors ${

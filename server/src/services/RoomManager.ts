@@ -215,6 +215,65 @@ class RoomManager {
     }
   }
 
+  public transferHost(
+    meetingId: string,
+    newHostSocketId: string
+  ): { previousHost?: ParticipantState; newHost?: ParticipantState } | undefined {
+    const room = this.rooms.get(meetingId);
+    if (!room) return undefined;
+
+    const newHost = room.participants.get(newHostSocketId);
+    if (!newHost) return undefined;
+
+    let previousHost: ParticipantState | undefined;
+    for (const p of room.participants.values()) {
+      if (p.role === 'HOST' && p.socketId !== newHostSocketId) {
+        p.role = 'PARTICIPANT';
+        previousHost = p;
+      }
+    }
+
+    newHost.role = 'HOST';
+    newHost.isCameraBlocked = false;
+    room.hostUserId = newHost.userId || newHost.socketId;
+
+    return { previousHost, newHost };
+  }
+
+  public promoteNextHost(meetingId: string): ParticipantState | undefined {
+    const room = this.rooms.get(meetingId);
+    if (!room || room.participants.size === 0) return undefined;
+
+    // Look for an existing HOST
+    for (const p of room.participants.values()) {
+      if (p.role === 'HOST') return p;
+    }
+
+    // Pick first available participant
+    const nextHost = room.participants.values().next().value;
+    if (nextHost) {
+      nextHost.role = 'HOST';
+      nextHost.isCameraBlocked = false;
+      room.hostUserId = nextHost.userId || nextHost.socketId;
+      return nextHost;
+    }
+    return undefined;
+  }
+
+  public muteAllParticipants(meetingId: string, excludeSocketId?: string): ParticipantState[] {
+    const room = this.rooms.get(meetingId);
+    if (!room) return [];
+
+    const muted: ParticipantState[] = [];
+    for (const p of room.participants.values()) {
+      if (p.socketId !== excludeSocketId && p.role !== 'HOST') {
+        p.isAudioMuted = true;
+        muted.push(p);
+      }
+    }
+    return muted;
+  }
+
   // -----------------------------------------------------------------
   // POLL MANAGEMENT
   // -----------------------------------------------------------------

@@ -49,8 +49,6 @@ export function registerMeetingSocketHandlers(io: Server): void {
           user = verifyToken(token);
         }
 
-        const isHost = Boolean(user && user.userId === meeting.hostId);
-
         // Ensure room is registered in RoomManager
         const room = roomManager.getOrCreateRoom(meetingId, {
           title: meeting.title,
@@ -58,6 +56,14 @@ export function registerMeetingSocketHandlers(io: Server): void {
           isLocked: meeting.isLocked,
           waitingRoomEnabled: meeting.waitingRoomEnabled,
         });
+
+        const currentParticipants = roomManager.getParticipantsList(meetingId);
+        const hasExistingHost = currentParticipants.some(p => p.role === 'HOST');
+        const isHost = Boolean(
+          (user && user.userId === meeting.hostId) ||
+          (user && user.userId === room.hostUserId) ||
+          (!hasExistingHost && currentParticipants.length === 0)
+        );
 
         // Room Lock Check
         if (room.isLocked && !isHost) {
@@ -490,19 +496,107 @@ export function registerMeetingSocketHandlers(io: Server): void {
         .catch(err => console.error('Error updating waiting room in DB:', err));
     });
 
-    socket.on('end-meeting-for-everyone', async () => {
+    socket.on('transfer-host', ({ targetSocketId }: { targetSocketId: string }) => {
+      const hostInfo = roomManager.findParticipantBySocketId(socket.id);
+      if (!hostInfo || hostInfo.participant.role !== 'HOST') {
+        socket.emit('meeting-error', { message: 'Only the host can transfer host controls' });
+        return;
+      }
+
+      if (targetSocketId === socket.id) return;
+
+      const result = roomManager.transferHost(hostInfo.meetingId, targetSocketId);
+      if (result && result.newHost) {
+        io.to(`meeting:${hostInfo.meetingId}`).emit('host-transferred', {
+          newHostSocketId: result.newHost.socketId,
+          newHostDisplayName: result.newHost.displayName,
+          previousHostSocketId: socket.id,
+          reason: `Host privileges were transferred to ${result.newHost.displayName}.`,
+        });
+
+        io.to(result.newHost.socketId).emit('promoted-to-host', {
+          message: 'You are now the meeting host! All host controls are enabled.',
+        });
+
+        if (result.newHost.userId) {
+          prisma.meeting
+            .update({
+              where: { id: hostInfo.meetingId },
+              data: { hostId: result.newHost.userId },
+            })
+            .catch(err => console.error('Error updating meeting host in DB:', err));
+        }
+      }
+    });
+
+    socket.on('mute-all-participants', () => {
       const hostInfo = roomManager.findParticipantBySocketId(socket.id);
       if (!hostInfo || hostInfo.participant.role !== 'HOST') return;
 
-      io.to(`meeting:${hostInfo.meetingId}`).emit('meeting-ended', {
+      const muted = roomManager.muteAllParticipants(hostInfo.meetingId, socket.id);
+      for (const p of muted) {
+        io.to(p.socketId).emit('force-mute');
+        io.to(`meeting:${hostInfo.meetingId}`).emit('participant-media-changed', {
+          socketId: p.socketId,
+          isAudioMuted: true,
+          isVideoOff: p.isVideoOff,
+          isScreenSharing: p.isScreenSharing,
+        });
+      }
+    });
+
+    socket.on('end-meeting-for-everyone', async (payload?: { meetingId?: string }) => {
+      let hostInfo = roomManager.findParticipantBySocketId(socket.id);
+      const meetingId = payload?.meetingId || hostInfo?.meetingId;
+      if (!meetingId) return;
+
+      const room = roomManager.getRoom(meetingId);
+      if (!room) return;
+
+      const participant = hostInfo?.participant || room.participants.get(socket.id);
+      const isHost = participant?.role === 'HOST' || room.hostUserId === participant?.userId || room.participants.size <= 1;
+
+      if (!isHost) {
+        socket.emit('meeting-error', { message: 'Only the meeting host can end the meeting for everyone' });
+        return;
+      }
+
+      const allSocketIds = Array.from(new Set([
+        ...Array.from(room.participants.keys()),
+        ...Array.from(room.waitingParticipants.keys()),
+      ]));
+
+      // 1. Broadcast meeting-ended to the room channel
+      io.to(`meeting:${meetingId}`).emit('meeting-ended', {
         message: 'The host has ended this meeting for all participants.',
+        endedByHost: true,
       });
 
-      roomManager.closeRoom(hostInfo.meetingId);
+      // 2. Also directly emit meeting-ended to every individual socket in the room to guarantee delivery
+      for (const sid of allSocketIds) {
+        io.to(sid).emit('meeting-ended', {
+          message: 'The host has ended this meeting for all participants.',
+          endedByHost: true,
+        });
+      }
+
+      // 3. Close room in roomManager
+      roomManager.closeRoom(meetingId);
+
+      // 4. Force disconnect sockets after slight flush delay
+      setTimeout(() => {
+        for (const sid of allSocketIds) {
+          const s = io.sockets.sockets.get(sid);
+          if (s) {
+            s.leave(`meeting:${meetingId}`);
+            s.disconnect(true);
+          }
+        }
+      }, 300);
 
       await prisma.meeting
         .update({
-          where: { id: hostInfo.meetingId },
+          where: { id: meetingId },
           data: { endedAt: new Date() },
         })
         .catch(err => console.error('Error ending meeting in DB:', err));
@@ -626,12 +720,31 @@ function handleSocketDisconnect(socket: Socket, io: Server): void {
   // Check if participant was active in a room
   const participantInfo = roomManager.findParticipantBySocketId(socket.id);
   if (participantInfo) {
-    const { meetingId } = participantInfo;
+    const { meetingId, participant } = participantInfo;
+    const wasHost = participant.role === 'HOST';
+
     socket.leave(`meeting:${meetingId}`);
-    roomManager.removeParticipant(meetingId, socket.id);
+    const { roomEmpty } = roomManager.removeParticipant(meetingId, socket.id);
 
     // Broadcast participant left to remaining peers
     io.to(`meeting:${meetingId}`).emit('participant-left', { socketId: socket.id });
+
+    // If the host left and room still has participants, automatically promote the next host!
+    if (wasHost && !roomEmpty) {
+      const newHost = roomManager.promoteNextHost(meetingId);
+      if (newHost) {
+        io.to(`meeting:${meetingId}`).emit('host-transferred', {
+          newHostSocketId: newHost.socketId,
+          newHostDisplayName: newHost.displayName,
+          previousHostSocketId: socket.id,
+          reason: `The previous host left the meeting. ${newHost.displayName} is now the host.`,
+        });
+
+        io.to(newHost.socketId).emit('promoted-to-host', {
+          message: 'The previous host left the meeting. You are now the meeting host with full host controls!',
+        });
+      }
+    }
     return;
   }
 

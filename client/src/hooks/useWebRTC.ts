@@ -247,18 +247,50 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
     };
   }, [closePeerConnection, createPeerConnection, initiateOffer, processCandidateQueue, socket]);
 
-  // Seamless track replacement for screen sharing or camera toggle
+  // Seamless track replacement for screen sharing, camera toggle, or microphone reacquisition
   useEffect(() => {
     const videoTrack = screenStream?.getVideoTracks()[0] || localStream?.getVideoTracks()[0] || null;
+    const audioTrack = localStream?.getAudioTracks()[0] || null;
 
     peerConnectionsRef.current.forEach(pc => {
-      const senders = pc.getSenders();
-      const videoSender = senders.find(s => s.track && s.track.kind === 'video');
+      // 1. Video sender / transceiver replacement
+      const transceivers = pc.getTransceivers();
+      const videoTransceiver = transceivers.find(
+        t => t.sender.track?.kind === 'video' || t.receiver.track.kind === 'video'
+      );
 
-      if (videoSender && videoTrack) {
-        videoSender.replaceTrack(videoTrack).catch(err => {
+      if (videoTransceiver) {
+        videoTransceiver.sender.replaceTrack(videoTrack).catch(err => {
           console.warn('Error replacing video track:', err);
         });
+      } else if (videoTrack) {
+        try {
+          const activeStream = screenStreamRef.current || localStreamRef.current;
+          if (activeStream) {
+            pc.addTrack(videoTrack, activeStream);
+          }
+        } catch (err) {
+          console.warn('Error adding video track to peer connection:', err);
+        }
+      }
+
+      // 2. Audio sender / transceiver replacement
+      const audioTransceiver = transceivers.find(
+        t => t.sender.track?.kind === 'audio' || t.receiver.track.kind === 'audio'
+      );
+
+      if (audioTransceiver) {
+        audioTransceiver.sender.replaceTrack(audioTrack).catch(err => {
+          console.warn('Error replacing audio track:', err);
+        });
+      } else if (audioTrack) {
+        try {
+          if (localStreamRef.current) {
+            pc.addTrack(audioTrack, localStreamRef.current);
+          }
+        } catch (err) {
+          console.warn('Error adding audio track to peer connection:', err);
+        }
       }
     });
   }, [screenStream, localStream]);
