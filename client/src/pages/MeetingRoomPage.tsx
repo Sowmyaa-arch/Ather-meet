@@ -119,12 +119,18 @@ export const MeetingRoomPage: React.FC = () => {
   });
 
   // WebRTC Hook
-  const { remoteStreams, closeAllConnections } = useWebRTC({
+  const { remoteStreams, setLocalMediaStream, initiateOffer, closeAllConnections } = useWebRTC({
     socket: socketRef.current,
     localStream,
     screenStream,
     iceServers,
   });
+
+  // Keep stable refs for use inside the once-mounted useEffect closure
+  const initiateOfferRef = useRef(initiateOffer);
+  const setLocalMediaStreamRef = useRef(setLocalMediaStream);
+  useEffect(() => { initiateOfferRef.current = initiateOffer; }, [initiateOffer]);
+  useEffect(() => { setLocalMediaStreamRef.current = setLocalMediaStream; }, [setLocalMediaStream]);
 
   // Duration Timer
   useEffect(() => {
@@ -181,6 +187,12 @@ export const MeetingRoomPage: React.FC = () => {
       const stream = await startMedia();
       if (isCancelled) return;
 
+      // CRITICAL: Immediately attach local tracks to WebRTC ref so they are
+      // available when offer/answer is created, before React re-render.
+      if (stream) {
+        setLocalMediaStreamRef.current(stream);
+      }
+
       // Apply initial muted / video off states
       if (initialMuted) {
         setIsAudioMuted(true);
@@ -227,6 +239,18 @@ export const MeetingRoomPage: React.FC = () => {
       }
       setIceServers(data.iceServers || []);
       setParticipants(data.participants || []);
+
+      // CRITICAL: As the joining user, initiate WebRTC offers to ALL existing
+      // participants. The existing participants will also call initiateOffer
+      // when they receive 'participant-joined', so both sides negotiate.
+      if (data.participants && data.participants.length > 0) {
+        data.participants.forEach((p: any, index: number) => {
+          // Stagger offers slightly to avoid race conditions
+          setTimeout(() => {
+            initiateOfferRef.current(p.socketId);
+          }, 600 + index * 200);
+        });
+      }
     };
 
     const handleWaitingRoomStatus = (data: any) => {
@@ -247,6 +271,15 @@ export const MeetingRoomPage: React.FC = () => {
       }
       setIceServers(data.iceServers || []);
       setParticipants(data.participants || []);
+
+      // CRITICAL: Also initiate offers when admitted from waiting room
+      if (data.participants && data.participants.length > 0) {
+        data.participants.forEach((p: any, index: number) => {
+          setTimeout(() => {
+            initiateOfferRef.current(p.socketId);
+          }, 600 + index * 200);
+        });
+      }
     };
 
     const handleMeetingRejected = (data: any) => {

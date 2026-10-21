@@ -15,22 +15,8 @@ const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun2.l.google.com:19302' },
   { urls: 'stun:stun3.l.google.com:19302' },
   { urls: 'stun:stun4.l.google.com:19302' },
-  { urls: 'stun:openrelay.metered.ca:80' },
-  {
-    urls: 'turn:openrelay.metered.ca:80',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
-  {
-    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-    username: 'openrelayproject',
-    credential: 'openrelayproject',
-  },
+  { urls: 'stun:stun.cloudflare.com:3478' },
+  { urls: 'stun:stun.services.mozilla.com:3478' },
 ];
 
 export function useWebRTC({ socket, localStream, screenStream, iceServers }: WebRTCProps) {
@@ -43,14 +29,53 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
   const localStreamRef = useRef<MediaStream | null>(localStream);
   const screenStreamRef = useRef<MediaStream | null>(screenStream);
 
-  // Keep stream refs updated
+  // Helper to attach local tracks to a peer connection
+  const attachTracks = useCallback((pc: RTCPeerConnection, stream: MediaStream) => {
+    const senders = pc.getSenders();
+    stream.getTracks().forEach(track => {
+      const existingSender = senders.find(s => s.track && s.track.kind === track.kind);
+      if (existingSender) {
+        existingSender.replaceTrack(track).catch(err => {
+          console.warn(`[WebRTC] replaceTrack error for ${track.kind}:`, err);
+        });
+      } else {
+        try {
+          pc.addTrack(track, stream);
+        } catch (err) {
+          console.warn(`[WebRTC] addTrack error for ${track.kind}:`, err);
+        }
+      }
+    });
+  }, []);
+
+  // Keep stream refs updated and sync to active peer connections
   useEffect(() => {
     localStreamRef.current = localStream;
-  }, [localStream]);
+    if (localStream) {
+      peerConnectionsRef.current.forEach(pc => {
+        attachTracks(pc, localStream);
+      });
+    }
+  }, [localStream, attachTracks]);
 
   useEffect(() => {
     screenStreamRef.current = screenStream;
-  }, [screenStream]);
+    if (screenStream) {
+      peerConnectionsRef.current.forEach(pc => {
+        attachTracks(pc, screenStream);
+      });
+    }
+  }, [screenStream, attachTracks]);
+
+  // Method to immediately provide media stream before React state render
+  const setLocalMediaStream = useCallback((stream: MediaStream | null) => {
+    localStreamRef.current = stream;
+    if (stream) {
+      peerConnectionsRef.current.forEach(pc => {
+        attachTracks(pc, stream);
+      });
+    }
+  }, [attachTracks]);
 
   // Flush queued ICE candidates after remote description is set
   const processCandidateQueue = useCallback(async (peerId: string) => {
@@ -64,7 +89,7 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (err) {
-          console.warn(`Error adding queued ICE candidate for ${peerId}:`, err);
+          console.warn(`[WebRTC] Error adding queued candidate for ${peerId}:`, err);
         }
       }
     }
@@ -74,42 +99,25 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
   // Create an RTCPeerConnection instance for a peer
   const createPeerConnection = useCallback(
     (peerId: string): RTCPeerConnection => {
-      // Return existing if already created
       if (peerConnectionsRef.current.has(peerId)) {
         return peerConnectionsRef.current.get(peerId)!;
       }
 
+      console.log(`[WebRTC] Creating RTCPeerConnection for peer ${peerId}`);
       const activeIceServers = iceServers && iceServers.length > 0 ? iceServers : DEFAULT_ICE_SERVERS;
 
-      const rtcConfig: RTCConfiguration = {
+      const pc = new RTCPeerConnection({
         iceServers: activeIceServers,
         iceCandidatePoolSize: 10,
-      };
+      });
 
-      const pc = new RTCPeerConnection(rtcConfig);
       peerConnectionsRef.current.set(peerId, pc);
       candidateQueuesRef.current.set(peerId, []);
 
-      // Add transceivers upfront so SDP always includes sendrecv audio and video channels
-      const audioTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
-      const videoTransceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
-
-      // Add active local tracks if available immediately
+      // Attach any available local tracks immediately
       const activeStream = screenStreamRef.current || localStreamRef.current;
-      if (activeStream) {
-        const audioTrack = activeStream.getAudioTracks()[0];
-        if (audioTrack && audioTransceiver.sender) {
-          audioTransceiver.sender.replaceTrack(audioTrack).catch(err => {
-            console.warn(`Error setting initial audio track for ${peerId}:`, err);
-          });
-        }
-
-        const videoTrack = activeStream.getVideoTracks()[0];
-        if (videoTrack && videoTransceiver.sender) {
-          videoTransceiver.sender.replaceTrack(videoTrack).catch(err => {
-            console.warn(`Error setting initial video track for ${peerId}:`, err);
-          });
-        }
+      if (activeStream && activeStream.getTracks().length > 0) {
+        attachTracks(pc, activeStream);
       }
 
       // Handle ICE Candidate generation
@@ -122,11 +130,12 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
         }
       };
 
-      // Handle Remote Stream reception (combines audio and video tracks without overwriting)
+      // Handle Remote Stream reception
       pc.ontrack = event => {
+        console.log(`[WebRTC] Received remote track (${event.track.kind}) from ${peerId}`);
         setRemoteStreams(prev => {
-          const existing = prev.get(peerId);
           let stream: MediaStream;
+          const existing = prev.get(peerId);
 
           if (event.streams && event.streams[0]) {
             stream = event.streams[0];
@@ -147,16 +156,22 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
 
       // Handle Connection State changes
       pc.oniceconnectionstatechange = () => {
+        console.log(`[WebRTC] Peer ${peerId} ICE State: ${pc.iceConnectionState}`);
         setConnectionStates(prev => {
           const updated = new Map(prev);
           updated.set(peerId, pc.iceConnectionState);
           return updated;
         });
+
+        if (pc.iceConnectionState === 'failed') {
+          console.warn(`[WebRTC] ICE failed for ${peerId}, restarting ICE`);
+          pc.restartIce();
+        }
       };
 
       return pc;
     },
-    [iceServers, socket]
+    [iceServers, socket, attachTracks]
   );
 
   // Close and cleanup a specific peer connection
@@ -184,7 +199,7 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
     });
   }, []);
 
-  // Close all peer connections (e.g. on leaving meeting)
+  // Close all peer connections
   const closeAllConnections = useCallback(() => {
     peerConnectionsRef.current.forEach((_, peerId) => {
       closePeerConnection(peerId);
@@ -200,7 +215,15 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
     async (peerId: string) => {
       if (!socket) return;
       try {
+        console.log(`[WebRTC] Initiating offer to peer ${peerId}`);
         const pc = createPeerConnection(peerId);
+
+        // Ensure tracks are attached before creating offer
+        const activeStream = screenStreamRef.current || localStreamRef.current;
+        if (activeStream && activeStream.getTracks().length > 0) {
+          attachTracks(pc, activeStream);
+        }
+
         const offer = await pc.createOffer({
           offerToReceiveAudio: true,
           offerToReceiveVideo: true,
@@ -212,10 +235,10 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
           offer,
         });
       } catch (err) {
-        console.error(`Error initiating offer to ${peerId}:`, err);
+        console.error(`[WebRTC] Error initiating offer to ${peerId}:`, err);
       }
     },
-    [createPeerConnection, socket]
+    [createPeerConnection, socket, attachTracks]
   );
 
   // Setup Socket signaling listeners
@@ -224,15 +247,35 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
 
     // 1. Participant Joined: Initiate connection offer to them
     const handleParticipantJoined = async (participant: { socketId: string }) => {
+      console.log(`[WebRTC] Participant joined room: ${participant.socketId}`);
       await initiateOffer(participant.socketId);
     };
 
-    // 2. Incoming Offer: Set remote description, create and send answer
-    const handleSignalOffer = async ({ senderSocketId, offer }: { senderSocketId: string; offer: RTCSessionDescriptionInit }) => {
+    // 2. Incoming Offer: Set remote description, attach local tracks, send answer
+    const handleSignalOffer = async ({
+      senderSocketId,
+      offer,
+    }: {
+      senderSocketId: string;
+      offer: RTCSessionDescriptionInit;
+    }) => {
       try {
+        console.log(`[WebRTC] Received offer from ${senderSocketId}`);
         const pc = createPeerConnection(senderSocketId);
+
+        // Handle collision / polite peer
+        if (pc.signalingState !== 'stable') {
+          await pc.setLocalDescription({ type: 'rollback' } as any).catch(() => {});
+        }
+
         await pc.setRemoteDescription(new RTCSessionDescription(offer));
         await processCandidateQueue(senderSocketId);
+
+        // Attach local tracks to answer
+        const activeStream = screenStreamRef.current || localStreamRef.current;
+        if (activeStream && activeStream.getTracks().length > 0) {
+          attachTracks(pc, activeStream);
+        }
 
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
@@ -242,34 +285,46 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
           answer,
         });
       } catch (err) {
-        console.error(`Error handling offer from ${senderSocketId}:`, err);
+        console.error(`[WebRTC] Error handling offer from ${senderSocketId}:`, err);
       }
     };
 
     // 3. Incoming Answer: Set remote description
-    const handleSignalAnswer = async ({ senderSocketId, answer }: { senderSocketId: string; answer: RTCSessionDescriptionInit }) => {
+    const handleSignalAnswer = async ({
+      senderSocketId,
+      answer,
+    }: {
+      senderSocketId: string;
+      answer: RTCSessionDescriptionInit;
+    }) => {
       try {
+        console.log(`[WebRTC] Received answer from ${senderSocketId}`);
         const pc = peerConnectionsRef.current.get(senderSocketId);
         if (pc) {
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
           await processCandidateQueue(senderSocketId);
         }
       } catch (err) {
-        console.error(`Error handling answer from ${senderSocketId}:`, err);
+        console.error(`[WebRTC] Error handling answer from ${senderSocketId}:`, err);
       }
     };
 
     // 4. Incoming ICE Candidate: Add or queue
-    const handleSignalIceCandidate = async ({ senderSocketId, candidate }: { senderSocketId: string; candidate: RTCIceCandidateInit }) => {
+    const handleSignalIceCandidate = async ({
+      senderSocketId,
+      candidate,
+    }: {
+      senderSocketId: string;
+      candidate: RTCIceCandidateInit;
+    }) => {
       const pc = peerConnectionsRef.current.get(senderSocketId);
       if (pc && pc.remoteDescription && pc.remoteDescription.type) {
         try {
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (err) {
-          console.warn(`Error adding ICE candidate from ${senderSocketId}:`, err);
+          console.warn(`[WebRTC] Error adding ICE candidate from ${senderSocketId}:`, err);
         }
       } else {
-        // Queue candidate until remote description is applied
         const queue = candidateQueuesRef.current.get(senderSocketId) || [];
         queue.push(candidate);
         candidateQueuesRef.current.set(senderSocketId, queue);
@@ -278,6 +333,7 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
 
     // 5. Participant Left: Clean up their connection
     const handleParticipantLeft = ({ socketId }: { socketId: string }) => {
+      console.log(`[WebRTC] Participant left: ${socketId}`);
       closePeerConnection(socketId);
     };
 
@@ -294,59 +350,12 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
       socket.off('signal-ice-candidate', handleSignalIceCandidate);
       socket.off('participant-left', handleParticipantLeft);
     };
-  }, [closePeerConnection, createPeerConnection, initiateOffer, processCandidateQueue, socket]);
-
-  // Seamless track replacement for screen sharing, camera toggle, or microphone reacquisition
-  useEffect(() => {
-    const videoTrack = screenStream?.getVideoTracks()[0] || localStream?.getVideoTracks()[0] || null;
-    const audioTrack = localStream?.getAudioTracks()[0] || null;
-
-    peerConnectionsRef.current.forEach(pc => {
-      // 1. Video sender / transceiver replacement
-      const transceivers = pc.getTransceivers();
-      const videoTransceiver = transceivers.find(
-        t => t.sender.track?.kind === 'video' || t.receiver.track.kind === 'video'
-      );
-
-      if (videoTransceiver) {
-        videoTransceiver.sender.replaceTrack(videoTrack).catch(err => {
-          console.warn('Error replacing video track:', err);
-        });
-      } else if (videoTrack) {
-        try {
-          const activeStream = screenStreamRef.current || localStreamRef.current;
-          if (activeStream) {
-            pc.addTrack(videoTrack, activeStream);
-          }
-        } catch (err) {
-          console.warn('Error adding video track to peer connection:', err);
-        }
-      }
-
-      // 2. Audio sender / transceiver replacement
-      const audioTransceiver = transceivers.find(
-        t => t.sender.track?.kind === 'audio' || t.receiver.track.kind === 'audio'
-      );
-
-      if (audioTransceiver) {
-        audioTransceiver.sender.replaceTrack(audioTrack).catch(err => {
-          console.warn('Error replacing audio track:', err);
-        });
-      } else if (audioTrack) {
-        try {
-          if (localStreamRef.current) {
-            pc.addTrack(audioTrack, localStreamRef.current);
-          }
-        } catch (err) {
-          console.warn('Error adding audio track to peer connection:', err);
-        }
-      }
-    });
-  }, [screenStream, localStream]);
+  }, [closePeerConnection, createPeerConnection, initiateOffer, processCandidateQueue, socket, attachTracks]);
 
   return {
     remoteStreams,
     connectionStates,
+    setLocalMediaStream,
     initiateOffer,
     closePeerConnection,
     closeAllConnections,
