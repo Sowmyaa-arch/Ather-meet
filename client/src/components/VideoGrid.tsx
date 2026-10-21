@@ -177,10 +177,29 @@ const RemoteAudio: React.FC<{ stream: MediaStream; isMuted: boolean }> = ({ stre
 
   React.useEffect(() => {
     if (audioRef.current && stream) {
-      audioRef.current.srcObject = stream;
-      audioRef.current.play().catch(e => console.warn('Audio autoplay blocked, click to resume:', e));
+      if (audioRef.current.srcObject !== stream) {
+        audioRef.current.srcObject = stream;
+      }
+      audioRef.current.play().catch(e => {
+        console.warn('Audio autoplay blocked, attempting resume on user click:', e);
+        const resume = () => {
+          audioRef.current?.play().catch(() => {});
+          window.removeEventListener('click', resume);
+          window.removeEventListener('touchstart', resume);
+        };
+        window.addEventListener('click', resume, { once: true });
+        window.addEventListener('touchstart', resume, { once: true });
+      });
     }
   }, [stream]);
 
-  return <audio ref={audioRef} autoPlay playsInline muted={isMuted} className="hidden" />;
+  return (
+    <audio
+      ref={audioRef}
+      autoPlay
+      playsInline
+      muted={isMuted}
+      style={{ position: 'fixed', top: -9999, left: -9999, opacity: 0, pointerEvents: 'none' }}
+    />
+  );
 };

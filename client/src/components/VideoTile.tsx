@@ -88,7 +88,7 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           className={clsx(
             'w-full h-full object-cover',
             isLocal && !isStreamSimulated(stream) ? 'video-mirrored' : '',
-            isVideoOff ? 'hidden' : 'block'
+            isVideoOff ? 'invisible absolute' : 'block'
           )}
         />
       )}

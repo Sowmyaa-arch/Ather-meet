@@ -9,6 +9,30 @@ interface WebRTCProps {
   iceServers: IceServer[];
 }
 
+const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  { urls: 'stun:stun2.l.google.com:19302' },
+  { urls: 'stun:stun3.l.google.com:19302' },
+  { urls: 'stun:stun4.l.google.com:19302' },
+  { urls: 'stun:openrelay.metered.ca:80' },
+  {
+    urls: 'turn:openrelay.metered.ca:80',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+  {
+    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+    username: 'openrelayproject',
+    credential: 'openrelayproject',
+  },
+];
+
 export function useWebRTC({ socket, localStream, screenStream, iceServers }: WebRTCProps) {
   // Remote streams mapped by peer socketId
   const [remoteStreams, setRemoteStreams] = useState<Map<string, MediaStream>>(new Map());
@@ -55,8 +79,10 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
         return peerConnectionsRef.current.get(peerId)!;
       }
 
+      const activeIceServers = iceServers && iceServers.length > 0 ? iceServers : DEFAULT_ICE_SERVERS;
+
       const rtcConfig: RTCConfiguration = {
-        iceServers: iceServers.length > 0 ? iceServers : [{ urls: 'stun:stun.l.google.com:19302' }],
+        iceServers: activeIceServers,
         iceCandidatePoolSize: 10,
       };
 
@@ -64,16 +90,26 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
       peerConnectionsRef.current.set(peerId, pc);
       candidateQueuesRef.current.set(peerId, []);
 
-      // Add local tracks (or screen share video if active)
+      // Add transceivers upfront so SDP always includes sendrecv audio and video channels
+      const audioTransceiver = pc.addTransceiver('audio', { direction: 'sendrecv' });
+      const videoTransceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
+
+      // Add active local tracks if available immediately
       const activeStream = screenStreamRef.current || localStreamRef.current;
       if (activeStream) {
-        activeStream.getTracks().forEach(track => {
-          try {
-            pc.addTrack(track, activeStream);
-          } catch (err) {
-            console.warn(`Error adding track to peer ${peerId}:`, err);
-          }
-        });
+        const audioTrack = activeStream.getAudioTracks()[0];
+        if (audioTrack && audioTransceiver.sender) {
+          audioTransceiver.sender.replaceTrack(audioTrack).catch(err => {
+            console.warn(`Error setting initial audio track for ${peerId}:`, err);
+          });
+        }
+
+        const videoTrack = activeStream.getVideoTracks()[0];
+        if (videoTrack && videoTransceiver.sender) {
+          videoTransceiver.sender.replaceTrack(videoTrack).catch(err => {
+            console.warn(`Error setting initial video track for ${peerId}:`, err);
+          });
+        }
       }
 
       // Handle ICE Candidate generation
@@ -86,10 +122,23 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
         }
       };
 
-      // Handle Remote Stream reception
+      // Handle Remote Stream reception (combines audio and video tracks without overwriting)
       pc.ontrack = event => {
-        const stream = event.streams[0] || new MediaStream([event.track]);
         setRemoteStreams(prev => {
+          const existing = prev.get(peerId);
+          let stream: MediaStream;
+
+          if (event.streams && event.streams[0]) {
+            stream = event.streams[0];
+          } else if (existing) {
+            if (!existing.getTracks().some(t => t.id === event.track.id)) {
+              existing.addTrack(event.track);
+            }
+            stream = existing;
+          } else {
+            stream = new MediaStream([event.track]);
+          }
+
           const updated = new Map(prev);
           updated.set(peerId, stream);
           return updated;
