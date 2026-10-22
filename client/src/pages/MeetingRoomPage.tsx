@@ -20,6 +20,7 @@ import { useMediaDevices } from '../hooks/useMediaDevices';
 import { useWebRTC } from '../hooks/useWebRTC';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { getSocket, disconnectSocket } from '../services/socket';
+import { api } from '../services/api';
 import { Participant, WaitingParticipant, ChatMessage, IceServer, PollData } from '../types';
 
 import { VideoGrid } from '../components/VideoGrid';
@@ -183,9 +184,24 @@ export const MeetingRoomPage: React.FC = () => {
     const socket = socketRef.current;
 
     async function initCall() {
-      // 1. Capture local media stream
-      const stream = await startMedia();
+      // 1. Fetch ICE servers (STUN + TURN) AND start local media in parallel
+      //    to minimise join latency. TURN credentials must be ready before
+      //    any RTCPeerConnection is created, so we await both together.
+      const [stream, iceResult] = await Promise.all([
+        startMedia(),
+        api.getIceServers().catch(err => {
+          console.warn('[ICE] Failed to fetch ICE servers, will rely on socket fallback:', err);
+          return { iceServers: [] as IceServer[] };
+        }),
+      ]);
+
       if (isCancelled) return;
+
+      // Set ICE servers immediately so createPeerConnection picks them up
+      if (iceResult.iceServers.length > 0) {
+        console.log(`[ICE] Loaded ${iceResult.iceServers.length} ICE servers from /api/ice-servers`);
+        setIceServers(iceResult.iceServers);
+      }
 
       // CRITICAL: Immediately attach local tracks to WebRTC ref so they are
       // available when offer/answer is created, before React re-render.

@@ -87,12 +87,21 @@ export const api = {
     return body;
   },
 
+  /**
+   * Fetches fresh ICE server config (STUN + TURN) from the backend.
+   * When METERED_API_KEY is set on Render, this returns time-limited TURN
+   * credentials. Falls back to STUN-only if not configured.
+   * No auth header required — TURN credentials are not user-specific.
+   */
   async getIceServers(): Promise<{ iceServers: IceServer[] }> {
-    const res = await fetch(`${API_BASE}/meetings/ice-servers`, {
-      headers: getAuthHeaders(),
-    });
-    const body = await res.json();
-    if (!res.ok) throw new Error(body.error || 'Failed to fetch ICE servers');
-    return body;
+    try {
+      const res = await fetch(`${API_BASE}/ice-servers`);
+      const body = await res.json();
+      if (!res.ok) throw new Error(body.error || 'Failed to fetch ICE servers');
+      return body;
+    } catch (err) {
+      console.warn('[ICE] Could not fetch ICE servers from backend, using empty list:', err);
+      return { iceServers: [] };
+    }
   },
 };

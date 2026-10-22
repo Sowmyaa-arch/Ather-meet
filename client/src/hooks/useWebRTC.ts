@@ -9,14 +9,14 @@ interface WebRTCProps {
   iceServers: IceServer[];
 }
 
+// Last-resort fallback used only if the server sends no iceServers.
+// These are STUN-only — they cannot relay traffic through firewalls.
+// For cross-NAT reliability, set METERED_API_KEY + METERED_DOMAIN on Render
+// so /api/ice-servers returns TURN credentials.
 const DEFAULT_ICE_SERVERS: RTCIceServer[] = [
   { urls: 'stun:stun.l.google.com:19302' },
   { urls: 'stun:stun1.l.google.com:19302' },
-  { urls: 'stun:stun2.l.google.com:19302' },
-  { urls: 'stun:stun3.l.google.com:19302' },
-  { urls: 'stun:stun4.l.google.com:19302' },
   { urls: 'stun:stun.cloudflare.com:3478' },
-  { urls: 'stun:stun.services.mozilla.com:3478' },
 ];
 
 export function useWebRTC({ socket, localStream, screenStream, iceServers }: WebRTCProps) {
@@ -120,13 +120,36 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
         attachTracks(pc, activeStream);
       }
 
-      // Handle ICE Candidate generation
+      // Log ICE Candidate types to confirm STUN/TURN usage
+      // candidate.type: 'host' = local, 'srflx' = STUN, 'relay' = TURN
       pc.onicecandidate = event => {
         if (event.candidate && socket) {
+          const c = event.candidate;
+          console.log(
+            `[ICE] Local candidate for ${peerId}: type=${c.type ?? 'unknown'} protocol=${c.protocol ?? '?'} address=${c.address ?? '?'}`
+          );
           socket.emit('signal-ice-candidate', {
             targetSocketId: peerId,
-            candidate: event.candidate.toJSON(),
+            candidate: c.toJSON(),
           });
+        } else if (!event.candidate) {
+          console.log(`[ICE] Candidate gathering complete for ${peerId}`);
+        }
+      };
+
+      // Log gathering state changes
+      pc.onicegatheringstatechange = () => {
+        console.log(`[ICE] Gathering state for ${peerId}: ${pc.iceGatheringState}`);
+      };
+
+      // Log ICE errors (useful to detect TURN credential failures)
+      pc.onicecandidateerror = (event) => {
+        const e = event as RTCPeerConnectionIceErrorEvent;
+        // errorCode 701 = TURN credential error, 701+ = server error
+        if (e.errorCode !== 701) {
+          console.warn(
+            `[ICE] Candidate error for ${peerId}: code=${e.errorCode} url=${e.url} text=${e.errorText}`
+          );
         }
       };
 
@@ -154,18 +177,44 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
         });
       };
 
-      // Handle Connection State changes
+      // Handle Connection State changes — both ICE and overall connection
       pc.oniceconnectionstatechange = () => {
-        console.log(`[WebRTC] Peer ${peerId} ICE State: ${pc.iceConnectionState}`);
+        const state = pc.iceConnectionState;
+        console.log(`[ICE] Peer ${peerId} ICE connection state: ${state}`);
         setConnectionStates(prev => {
           const updated = new Map(prev);
-          updated.set(peerId, pc.iceConnectionState);
+          updated.set(peerId, state);
           return updated;
         });
 
-        if (pc.iceConnectionState === 'failed') {
-          console.warn(`[WebRTC] ICE failed for ${peerId}, restarting ICE`);
+        if (state === 'failed') {
+          console.warn(`[ICE] Connection FAILED for ${peerId} — attempting ICE restart`);
           pc.restartIce();
+        } else if (state === 'connected' || state === 'completed') {
+          // Log the selected candidate pair to confirm if relay (TURN) is being used
+          pc.getStats().then(stats => {
+            stats.forEach(report => {
+              if (report.type === 'candidate-pair' && report.state === 'succeeded' && report.nominated) {
+                const localCandId = report.localCandidateId;
+                const remoteCandId = report.remoteCandidateId;
+                stats.forEach(r => {
+                  if (r.id === localCandId) {
+                    console.log(`[ICE] ✅ Selected LOCAL candidate: type=${r.candidateType} protocol=${r.protocol} address=${r.address}`);
+                  }
+                  if (r.id === remoteCandId) {
+                    console.log(`[ICE] ✅ Selected REMOTE candidate: type=${r.candidateType} protocol=${r.protocol} address=${r.address}`);
+                  }
+                });
+              }
+            });
+          });
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        console.log(`[ICE] Peer ${peerId} overall connection state: ${pc.connectionState}`);
+        if (pc.connectionState === 'failed') {
+          console.warn(`[ICE] Overall connection FAILED for ${peerId} — closing`);
         }
       };
 
@@ -180,7 +229,10 @@ export function useWebRTC({ socket, localStream, screenStream, iceServers }: Web
     if (pc) {
       pc.ontrack = null;
       pc.onicecandidate = null;
+      pc.onicegatheringstatechange = null;
+      pc.onicecandidateerror = null;
       pc.oniceconnectionstatechange = null;
+      pc.onconnectionstatechange = null;
       pc.close();
       peerConnectionsRef.current.delete(peerId);
     }

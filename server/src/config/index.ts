@@ -10,20 +10,27 @@ export const config = {
     .split(',')
     .map(origin => origin.trim()),
   redisUrl: process.env.REDIS_URL,
+
+  // Metered.ca TURN API (dynamic credentials via /api/ice-servers)
+  // Sign up at https://www.metered.ca/ to get these values.
+  meteredApiKey: process.env.METERED_API_KEY || '',
+  meteredDomain: process.env.METERED_DOMAIN || '',
+
+  // Static fallback ICE servers (STUN-only).
+  // Used in socket meeting-joined payload as a fast fallback.
+  // Dynamic TURN credentials are served via GET /api/ice-servers.
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
     { urls: 'stun:stun.services.mozilla.com:3478' },
+    // Optional: static TURN (lower priority than Metered dynamic TURN)
     ...(process.env.TURN_SERVER_URL
       ? [
           {
             urls: process.env.TURN_SERVER_URL,
-            username: process.env.TURN_USERNAME,
-            credential: process.env.TURN_CREDENTIAL,
+            username: process.env.TURN_USERNAME || '',
+            credential: process.env.TURN_CREDENTIAL || '',
           },
         ]
       : []),

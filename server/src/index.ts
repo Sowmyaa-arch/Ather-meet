@@ -9,6 +9,7 @@ import Redis from 'ioredis';
 import { config } from './config/index.js';
 import authRoutes from './routes/authRoutes.js';
 import meetingRoutes from './routes/meetingRoutes.js';
+import iceServersRoute from './routes/iceServersRoute.js';
 import { errorHandler } from './middleware/errorHandler.js';
 import { generalApiLimiter } from './middleware/rateLimiter.js';
 import { registerMeetingSocketHandlers } from './sockets/meetingSocket.js';
@@ -55,6 +56,7 @@ app.get('/api/health', (_req, res) => {
 // API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/meetings', meetingRoutes);
+app.use('/api/ice-servers', iceServersRoute);
 
 // Centralized error handler
 app.use(errorHandler);
