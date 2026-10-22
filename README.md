@@ -1,10 +1,13 @@
 # AetherMeet — Secure Real-Time Video Conferencing Website Using WebRTC
 
+🔗 **Live Demo:** [https://ather-meet-q3i3.vercel.app/](https://ather-meet-q3i3.vercel.app/)
+
 A modern, secure, and responsive real-time video conferencing application built with **WebRTC**, **Socket.IO**, **Node.js/Express (TypeScript)**, **React (Vite + TypeScript)**, and **Tailwind CSS**.
 
 AetherMeet supports multiple simultaneous independent meetings running concurrently, with real-time video/audio calling, screen sharing, in-meeting chat, host controls (waiting rooms, participant admission/removal, room locking), live emoji reaction bursts, and audio visualizer meters.
 
 ---
+
 
 ## 🌟 Key Features
 
